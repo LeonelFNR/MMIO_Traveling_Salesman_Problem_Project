@@ -3,7 +3,7 @@ param dist {NODES, NODES};
 
 # --- OPTIMIZATION MODEL VARIABLES ---
 # x[i,j] is 1 if edge (i,j) is used. Defined for i < j to handle symmetry.
-var x {i in NODES, j in NODES: i < j} >= 0, <= 1;
+var x {i in NODES, j in NODES: i < j} binary;
 
 # Objective: Minimize total distance
 minimize Total_Cost:

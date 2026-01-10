@@ -5,6 +5,9 @@ data tsp.dat;
 # Choose solver (cplex, gurobi, highs, cbc...)
 option solver cplex;
 
+# relax binary variables for lr
+option relax_integrality 1;
+
 # =========================================================
 # SECTION (a): HEURISTIC UPPER BOUND
 # =========================================================
@@ -133,10 +136,13 @@ display Total_Cost;
 # =========================================================
 print "\n=== SECTION (e): BRANCH AND BOUND (Optimal Solution) ===";
 
+# now NOT de-relax
+option relax_integrality 0;
+
 # Switch variables to binary to enforce integer solution
-for {i in NODES, j in NODES: i < j} {
-    let x[i,j].type := "binary";
-}
+#for {i in NODES, j in NODES: i < j} {
+#    let x[i,j].type := "binary";
+#}
 
 solve;
 display Total_Cost;
