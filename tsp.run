@@ -2,63 +2,147 @@ reset;
 model tsp.mod;
 data tsp.dat;
 
-# Optional: Select solver (e.g., cplex, gurobi, highs)
+# Choose solver (cplex, gurobi, highs, cbc...)
 option solver cplex;
 
-# --- SECTION (a): HEURISTIC (Upper Bound) ---
-# We can just hardcode the result of a Nearest Neighbor heuristic here for the report
-# or implement a simple greedy loop in AMPL (omitted for brevity).
-# Based on this dataset, a valid Upper Bound (Heuristic) is 328.
-print "Section (a): Heuristic Upper Bound = 328";
-print "---------------------------------------";
+# =========================================================
+# SECTION (a): HEURISTIC UPPER BOUND
+# =========================================================
+print "=== SECTION (a): HEURISTIC (Constructive + Improvement) ===";
 
-# --- SECTION (b): LINEAR RELAXATION ---
-print "Section (b): Solving Initial Linear Relaxation...";
+# --- PART 1: Constructive (Nearest Neighbor) ---
+let tour[1] := 1;
+let visited[1] := 1;
+let current_node := 1;
+
+for {step in 2..n} {
+    let min_dist := Infinity;
+    let next_node := 0;
+    
+    # Find closest unvisited neighbor
+    for {j in NODES} {
+        if visited[j] = 0 and dist[current_node, j] < min_dist then {
+            let min_dist := dist[current_node, j];
+            let next_node := j;
+        }
+    }
+    
+    # Move to next node
+    let tour[step] := next_node;
+    let visited[next_node] := 1;
+    let current_node := next_node;
+}
+let tour[n+1] := 1; # Return to start
+
+# Calculate initial cost
+let best_cost := sum {k in 1..n} dist[tour[k], tour[k+1]];
+printf "Constructive Heuristic (NN) Cost: %g\n", best_cost;
+
+# --- PART 2: Improvement (2-Opt Local Search) ---
+# We swap edges (i, i+1) and (j, j+1) if it reduces cost.
+let improved := 1;
+
+repeat while improved > 0 {
+    let improved := 0;
+    
+    # Loop over all eligible pairs of edges
+    for {i in 1..n-2} {
+        for {j in i+2..n} {
+            # Check if swapping gives a shorter path
+            # Old edges: (tour[i], tour[i+1]) and (tour[j], tour[j+1])
+            # New edges: (tour[i], tour[j])   and (tour[i+1], tour[j+1])
+            
+            if dist[tour[i], tour[j]] + dist[tour[i+1], tour[j+1]] < 
+               dist[tour[i], tour[i+1]] + dist[tour[j], tour[j+1]] then {
+                   
+                # Swap found! Reversing segment from i+1 to j
+                # AMPL requires manual swapping logic
+                for {k in 0..floor((j - (i+1))/2)} {
+                    let tmp := tour[i+1+k];
+                    let tour[i+1+k] := tour[j-k];
+                    let tour[j-k] := tmp;
+                }
+                
+                let improved := 1;
+                let best_cost := sum {k in 1..n} dist[tour[k], tour[k+1]];
+                # Restart search (First Improvement)
+                break; 
+            }
+        }
+        if improved = 1 then break;
+    }
+}
+
+printf "Improved Heuristic (2-Opt) Cost:  %g\n", best_cost;
+printf "Final Upper Bound: %g\n", best_cost;
+print "-----------------------------------------------------------";
+
+
+# =========================================================
+# SECTION (b): LINEAR RELAXATION
+# =========================================================
+print "\n=== SECTION (b): LINEAR RELAXATION (Lower Bound) ===";
+
 solve;
 display Total_Cost;
 
-# Display active edges to find subtours
-printf "\nActive Edges in Relaxation:\n";
+# Display active edges to identify subtours manually
+print "Active edges (x > 0):";
 for {i in NODES, j in NODES: i < j} {
     if x[i,j] > 0.001 then 
-        printf "Edge (%d, %d) = %.2f\n", i, j, x[i,j];
+        printf "(%d, %d) = %.2f\n", i, j, x[i,j];
 }
 
-# --- SECTION (c): MANUAL CUT 1 ---
-# Based on the output above, we see a subtour: {1, 2, 4, 12}
-# We add a constraint to break it: x(S) <= |S| - 1
-print "\nSection (c): Adding Cut for Subtour {1, 2, 4, 12}...";
-subject to Cut_C: 
+# NOTE for Report: 
+# Based on the data, the relaxation creates 3 disjoint subtours:
+# S1: {1, 2, 4, 12}
+# S2: {5, 8, 13, 15}
+# S3: {3, 6, 7, 9, 10, 11, 14}
+
+
+# =========================================================
+# SECTION (c): MANUAL CUT 1
+# =========================================================
+print "\n=== SECTION (c): ADDING MANUAL CUT 1 ===";
+print "Eliminating Subtour S1: {1, 2, 4, 12}";
+
+# Constraint: sum(x_ij) <= |S| - 1  => sum <= 3
+subject to Cut_Cluster1: 
     x[1,2] + x[1,4] + x[1,12] + x[2,4] + x[2,12] + x[4,12] <= 3;
 
 solve;
 display Total_Cost;
 
-# --- SECTION (d): MANUAL CUT 2 ---
-# Typically another subtour appears, e.g., {5, 8, 13, 15}
-print "\nSection (d): Adding Cut for Subtour {5, 8, 13, 15}...";
-subject to Cut_D: 
+
+# =========================================================
+# SECTION (d): MANUAL CUT 2
+# =========================================================
+print "\n=== SECTION (d): ADDING MANUAL CUT 2 ===";
+print "Eliminating Subtour S2: {5, 8, 13, 15}";
+
+# Constraint: sum(x_ij) <= |S| - 1 => sum <= 3
+subject to Cut_Cluster2: 
     x[5,8] + x[5,13] + x[5,15] + x[8,13] + x[8,15] + x[13,15] <= 3;
 
 solve;
 display Total_Cost;
 
-# --- SECTION (e): BRANCH AND BOUND (Full IP) ---
-print "\nSection (e): Solving Full Integer Problem (Branch & Bound)...";
 
-# Enforce binary constraints
+# =========================================================
+# SECTION (e): BRANCH AND BOUND (Full IP)
+# =========================================================
+print "\n=== SECTION (e): BRANCH AND BOUND (Optimal Solution) ===";
+
+# Switch variables to binary to enforce integer solution
 for {i in NODES, j in NODES: i < j} {
     let x[i,j].type := "binary";
 }
 
-# Add all other Subtour Elimination Constraints (SECs) usually done by the solver here
-# or we just rely on the solver's internal B&B for the small instance.
 solve;
 display Total_Cost;
 
-printf "\nOptimal Tour:\n";
+print "Optimal Tour Edges:";
 for {i in NODES, j in NODES: i < j} {
-    if x[i,j] > 0.9 then 
-        printf "(%d, %d) ", i, j;
+    if x[i,j] > 0.9 then printf "(%d, %d) ", i, j;
 }
 print "";
