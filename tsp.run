@@ -1,153 +1,198 @@
 reset;
 model tsp.mod;
 data tsp.dat;
-
-# Choose solver (cplex, gurobi, highs, cbc...)
 option solver cplex;
 
-# relax binary variables for lr
-option relax_integrality 1;
+# Inicializamos el conjunto de cortes como vacío antes de nada
+let CUTS := {};
 
 # =========================================================
-# SECTION (a): HEURISTIC UPPER BOUND
+# SECTION (a): HEURISTIC UPPER BOUND (Constructive + 2-Opt)
 # =========================================================
-print "=== SECTION (a): HEURISTIC (Constructive + Improvement) ===";
+print "=== SECTION (a) Part 1: Heuristic ===";
 
-# --- PART 1: Constructive (Nearest Neighbor) ---
+# 1. Nearest Neighbor
 let tour[1] := 1;
 let visited[1] := 1;
 let current_node := 1;
-
 for {step in 2..n} {
     let min_dist := Infinity;
     let next_node := 0;
-    
-    # Find closest unvisited neighbor
     for {j in NODES} {
         if visited[j] = 0 and dist[current_node, j] < min_dist then {
             let min_dist := dist[current_node, j];
             let next_node := j;
         }
     }
-    
-    # Move to next node
     let tour[step] := next_node;
     let visited[next_node] := 1;
     let current_node := next_node;
 }
-let tour[n+1] := 1; # Return to start
-
-# Calculate initial cost
+let tour[n+1] := 1;
 let best_cost := sum {k in 1..n} dist[tour[k], tour[k+1]];
-printf "Constructive Heuristic (NN) Cost: %g\n", best_cost;
 
-# --- PART 2: Improvement (2-Opt Local Search) ---
-# We swap edges (i, i+1) and (j, j+1) if it reduces cost.
+# 2. 2-Opt Improvement
 let improved := 1;
-
 repeat while improved > 0 {
     let improved := 0;
-    
-    # Loop over all eligible pairs of edges
     for {i in 1..n-2} {
         for {j in i+2..n} {
-            # Check if swapping gives a shorter path
-            # Old edges: (tour[i], tour[i+1]) and (tour[j], tour[j+1])
-            # New edges: (tour[i], tour[j])   and (tour[i+1], tour[j+1])
-            
-            if dist[tour[i], tour[j]] + dist[tour[i+1], tour[j+1]] < 
-               dist[tour[i], tour[i+1]] + dist[tour[j], tour[j+1]] then {
-                   
-                # Swap found! Reversing segment from i+1 to j
-                # AMPL requires manual swapping logic
+             if dist[tour[i], tour[j]] + dist[tour[i+1], tour[j+1]] < 
+                dist[tour[i], tour[i+1]] + dist[tour[j], tour[j+1]] then {
                 for {k in 0..floor((j - (i+1))/2)} {
                     let tmp := tour[i+1+k];
                     let tour[i+1+k] := tour[j-k];
                     let tour[j-k] := tmp;
                 }
-                
                 let improved := 1;
-                let best_cost := sum {k in 1..n} dist[tour[k], tour[k+1]];
-                # Restart search (First Improvement)
                 break; 
             }
         }
         if improved = 1 then break;
     }
 }
-
-printf "Improved Heuristic (2-Opt) Cost:  %g\n", best_cost;
-printf "Final Upper Bound: %g\n", best_cost;
-print "-----------------------------------------------------------";
+let best_cost := sum {k in 1..n} dist[tour[k], tour[k+1]];
+printf "Heuristic Upper Bound: %g\n", best_cost;
 
 
 # =========================================================
-# SECTION (b): LINEAR RELAXATION
+# SECTION (a) Part 2: INITIAL RELAXATION (Lower Bound)
 # =========================================================
-print "\n=== SECTION (b): LINEAR RELAXATION (Lower Bound) ===";
+print "\n=== SECTION (a) Part 2: Linear Relaxation ===";
+option relax_integrality 1; # Allow fractional values
 
 solve;
 display Total_Cost;
 
-# Display active edges to identify subtours manually
-print "Active edges (x > 0):";
+# =========================================================
+# SECTION (b): AUTOMATIC SUBTOUR ELIMINATION
+# =========================================================
+print "\n=== SECTION (b): Automatic Separation Algorithm ===";
+
+param num_cuts default 0;
+param iter default 0;
+param n_nodes default card(NODES);
+set UNVISITED;
+set CURRENT_COMPONENT;
+param found_subtour;
+param node_added;
+
+# Repeat max 3 times as per instructions
+repeat {
+    let iter := iter + 1;
+    printf "\n--- Iteration %d ---\n", iter;
+    
+    solve; # Solve with current cuts
+    display Total_Cost;
+    
+    # Flood-fill algorithm to find connected components
+    let UNVISITED := NODES;
+    let found_subtour := 0;
+    
+    repeat while card(UNVISITED) > 0 {
+        # --- CORRECCION AQUI ---
+        # Usamos 'min' para coger un nodo cualquiera sin error de orden
+        let CURRENT_COMPONENT := {min {k in UNVISITED} k};
+        
+        # Expand component
+        repeat {
+            let node_added := 0;
+            for {i in CURRENT_COMPONENT} {
+                for {j in UNVISITED diff CURRENT_COMPONENT} {
+                    # Check if edge exists (check both i,j and j,i)
+                    if (if i < j then x[i,j] else x[j,i]) > 0.001 then {
+                        let CURRENT_COMPONENT := CURRENT_COMPONENT union {j};
+                        let node_added := 1;
+                    }
+                }
+            }
+        } until node_added = 0;
+        
+        let UNVISITED := UNVISITED diff CURRENT_COMPONENT;
+        
+        # If component size < total nodes -> It's a Subtour!
+        if card(CURRENT_COMPONENT) < n_nodes then {
+            let found_subtour := 1;
+            let num_cuts := num_cuts + 1;
+            
+            printf " > Found Subtour %d (Size: %d)\n", num_cuts, card(CURRENT_COMPONENT);
+            
+            # Add to model dynamic sets
+            let CUTS := CUTS union {num_cuts};
+            let SUBTOUR_NODES[num_cuts] := CURRENT_COMPONENT;
+            
+            break; # Re-solve immediately (Greedy strategy)
+        }
+    }
+    
+    if found_subtour = 0 then {
+        print " > No subtours found. Graph is connected.";
+        break;
+    }
+    
+} until iter >= 3;
+
+print "Active edges after (b):";
 for {i in NODES, j in NODES: i < j} {
-    if x[i,j] > 0.001 then 
-        printf "(%d, %d) = %.2f\n", i, j, x[i,j];
+    if x[i,j] > 0.001 then printf "(%d, %d) = %.2f\n", i, j, x[i,j];
 }
 
-# NOTE for Report: 
-# Based on the data, the relaxation creates 3 disjoint subtours:
-# S1: {1, 2, 4, 12}
-# S2: {5, 8, 13, 15}
-# S3: {3, 6, 7, 9, 10, 11, 14}
-
 
 # =========================================================
-# SECTION (c): MANUAL CUT 1
+# SECTION (c): VALID INEQUALITY (Manual)
 # =========================================================
-print "\n=== SECTION (c): ADDING MANUAL CUT 1 ===";
-print "Eliminating Subtour S1: {1, 2, 4, 12}";
+print "\n=== SECTION (c): Valid Inequality (Manual) ===";
+# Look for fractional cycles (e.g. 0.5s) in the output above.
+# UNCOMMENT ONE EXAMPLE BELOW and ADJUST node IDs:
 
-# Constraint: sum(x_ij) <= |S| - 1  => sum <= 3
-subject to Cut_Cluster1: 
-    x[1,2] + x[1,4] + x[1,12] + x[2,4] + x[2,12] + x[4,12] <= 3;
+# Example: If triangle 1-2-3 is fractional (0.5 each):
+# subject to Valid_Ineq: x[1,2] + x[2,3] + x[1,3] <= 2;
 
 solve;
 display Total_Cost;
 
+print "Active edges after (c):";
+for {i in NODES, j in NODES: i < j} {
+    if x[i,j] > 0.001 then printf "(%d, %d) = %.2f\n", i, j, x[i,j];
+}
 
 # =========================================================
-# SECTION (d): MANUAL CUT 2
+# SECTION (d): GOMORY CUT (Manual)
 # =========================================================
-print "\n=== SECTION (d): ADDING MANUAL CUT 2 ===";
-print "Eliminating Subtour S2: {5, 8, 13, 15}";
+print "\n=== SECTION (d): Gomory Cut (Manual) 1st time ===";
 
-# Constraint: sum(x_ij) <= |S| - 1 => sum <= 3
-subject to Cut_Cluster2: 
-    x[5,8] + x[5,13] + x[5,15] + x[8,13] + x[8,15] + x[13,15] <= 3;
+subject to Gomory_Cut_1: x[1,2] + x[1,4] + x[2,4] <= 1;
 
 solve;
 display Total_Cost;
 
+print "Active edges after (d) first time:";
+for {i in NODES, j in NODES: i < j} {
+    if x[i,j] > 0.001 then printf "(%d, %d) = %.2f\n", i, j, x[i,j];
+}
 
-# =========================================================
-# SECTION (e): BRANCH AND BOUND (Full IP)
-# =========================================================
-print "\n=== SECTION (e): BRANCH AND BOUND (Optimal Solution) ===";
-
-# now NOT de-relax
-option relax_integrality 0;
-
-# Switch variables to binary to enforce integer solution
-#for {i in NODES, j in NODES: i < j} {
-#    let x[i,j].type := "binary";
-#}
+print "\n=== SECTION (d): Gomory Cut (Manual) 2nd time ===";
+subject to Gomory_Cut_2: x[6,7] + x[6,11] + x[7,11] <= 1;
 
 solve;
 display Total_Cost;
 
-print "Optimal Tour Edges:";
+print "Active edges after (d) second time:";
+for {i in NODES, j in NODES: i < j} {
+    if x[i,j] > 0.001 then printf "(%d, %d) = %.2f\n", i, j, x[i,j];
+}
+
+
+# =========================================================
+# SECTION (e): BRANCH AND BOUND
+# =========================================================
+print "\n=== SECTION (e): Branch & Bound ===";
+option relax_integrality 0; # Back to binary
+
+solve;
+display Total_Cost;
+
+print "Optimal Tour:";
 for {i in NODES, j in NODES: i < j} {
     if x[i,j] > 0.9 then printf "(%d, %d) ", i, j;
 }

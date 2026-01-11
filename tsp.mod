@@ -1,21 +1,20 @@
 set NODES;
 param dist {NODES, NODES};
 
-# --- OPTIMIZATION MODEL VARIABLES ---
-# x[i,j] is 1 if edge (i,j) is used. Defined for i < j to handle symmetry.
+# --- DECISION VARIABLES ---
+# Binary variable (relaxed to continuous in .run)
 var x {i in NODES, j in NODES: i < j} binary;
 
-# Objective: Minimize total distance
+# --- OBJECTIVE & CONSTRAINTS ---
 minimize Total_Cost:
     sum {i in NODES, j in NODES: i < j} dist[i,j] * x[i,j];
 
-# Constraints: Degree of every node must be 2
 subject to Degree {i in NODES}:
     sum {j in NODES: j > i} x[i,j] + sum {j in NODES: j < i} x[j,i] = 2;
 
-# --- HEURISTIC PARAMETERS (Used in tsp.run) ---
+# --- HEURISTIC PARAMS (Used in Section a) ---
 param n default card(NODES);
-param tour {1..n+1};       # Array to store the sequence of nodes
+param tour {1..n+1};
 param visited {NODES} default 0;
 param best_cost;
 param current_node;
@@ -23,3 +22,15 @@ param next_node;
 param min_dist;
 param improved;
 param tmp;
+
+# --- DYNAMIC CUTS SETUP (Crucial for Automatic Section b) ---
+# Set to store cut IDs found by the script
+set CUTS; 
+
+# Map each cut ID to the nodes forming the subtour
+set SUBTOUR_NODES {CUTS} within NODES;
+
+# Generic Constraint: sum(edges in S) <= |S| - 1
+subject to Dynamic_SEC {k in CUTS}:
+    sum {i in SUBTOUR_NODES[k], j in SUBTOUR_NODES[k]: i < j} x[i,j] 
+    <= card(SUBTOUR_NODES[k]) - 1;
